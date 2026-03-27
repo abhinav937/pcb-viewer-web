@@ -41,12 +41,19 @@ function initViewer() {
 
   viewer.on('loadProgress', ({ loaded, total, stage }) => {
     const pct = total ? Math.round((loaded / total) * 100) : 0;
-    progressBar.style.width = (stage ? 50 : pct) + '%'; // WASM stages don't have byte progress
-    const stageLabel = { 'fetch': 'Fetching…', 'loading-wasm': 'Loading WASM engine…', 'parsing': 'Parsing geometry…' }[stage] || `Loading… ${pct}%`;
+    const stageLabel = {
+      'fetch':        'Fetching…',
+      'loading-wasm': 'Loading WASM engine…',
+      'parsing':      'Parsing STEP geometry…',
+      'reading':      `Reading Gerber files… ${pct}%`,
+      'building':     'Building 3D board from Gerbers…',
+      'extracting':   'Extracting ZIP…',
+    }[stage] || `Loading… ${pct}%`;
+    progressBar.style.width = (stage === 'reading' ? pct : 60) + '%';
     setStatus(stageLabel, 'info');
   });
 
-  viewer.on('loadComplete', ({ layers, components, fileType }) => {
+  viewer.on('loadComplete', ({ layers, components, fileType, detectedLayers = [], skipped = [] }) => {
     progressWrap.hidden = true;
     dropzone.hidden = true;
     canvas.hidden   = false;
@@ -56,21 +63,33 @@ function initViewer() {
     gridChk.checked = true;
     explodeSlider.value = 0;
 
+    const noLayerMode = fileType === 'step' || fileType === 'gerber';
+
     if (fileType === 'step') {
-      // STEP mode — no layer/component data; hide those panels gracefully
-      setStatus('STEP model loaded — 3D view only (no layer or component data)', 'success');
-      layerList.innerHTML   = '<p class="empty" style="padding:10px 8px">STEP files don\'t contain layer data</p>';
+      setStatus('STEP model loaded — 3D geometry only', 'success');
+      layerList.innerHTML     = '<p class="empty" style="padding:10px 8px">STEP files don\'t contain layer data</p>';
       componentList.innerHTML = '<p class="empty" style="padding:10px 8px">No component list in STEP mode</p>';
-      statsEl.textContent   = 'STEP model';
+      statsEl.textContent     = 'STEP model';
+    } else if (fileType === 'gerber') {
+      // detectedLayers and skipped are already destructured from event payload
+      const layerLabels = detectedLayers.map(k => k.replace(/_/g, ' ')).join(', ');
+      setStatus(`Gerber board loaded — ${detectedLayers.length} layer(s): ${layerLabels}`, 'success');
+      layerList.innerHTML     = `<p class="empty" style="padding:10px 8px">Layers baked into texture:<br><span style="color:var(--accent);font-size:10px">${layerLabels || '—'}</span>${skipped.length ? `<br><span style="color:var(--warn);font-size:10px">Skipped: ${skipped.join(', ')}</span>` : ''}</p>`;
+      componentList.innerHTML = '<p class="empty" style="padding:10px 8px">Gerber files don\'t carry component data</p>';
+      statsEl.textContent     = `Gerber · ${detectedLayers.length} layers`;
+    } else {
+      setStatus(`Loaded — ${components.length} component(s), ${layers.filter(l => l.objectCount > 0).length} layer(s)`, 'success');
+      renderLayers(layers);
+      renderComponentList(components);
+      updateStats(components.length, layers);
+    }
+
+    if (noLayerMode) {
       document.getElementById('sidebar-left').style.opacity = '0.5';
       document.getElementById('sidebar-right').querySelector('#component-list').parentElement.style.opacity = '0.5';
     } else {
       document.getElementById('sidebar-left').style.opacity = '';
       document.getElementById('sidebar-right').querySelector('#component-list').parentElement.style.opacity = '';
-      setStatus(`Loaded — ${components.length} component(s), ${layers.filter(l => l.objectCount > 0).length} layer(s)`, 'success');
-      renderLayers(layers);
-      renderComponentList(components);
-      updateStats(components.length, layers);
     }
   });
 
@@ -287,31 +306,106 @@ document.getElementById('btn-info-close').addEventListener('click', () => {
 
 // ─── File loading ──────────────────────────────────────────────────────────
 
-async function loadFile(file) {
-  if (!file) return;
+const GERBER_EXT = /\.(gbr|gtl|gbl|gto|gbo|gts|gbs|gtp|gbp|gko|gm1|drl|xln|exc|ncd)$/i;
+const GLB_EXT    = /\.(glb|gltf)$/i;
+const STEP_EXT   = /\.(step|stp)$/i;
+const ZIP_EXT    = /\.zip$/i;
 
-  const isGLB  = /\.(glb|gltf)$/i.test(file.name);
-  const isSTEP = /\.(step|stp)$/i.test(file.name);
+// ── JSZip lazy loader ──────────────────────────────────────────────────────
+let _jszip = null;
+async function getJSZip() {
+  if (_jszip) return _jszip;
+  await new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src     = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+    s.onload  = res;
+    s.onerror = () => rej(new Error('Failed to load JSZip from CDN'));
+    document.head.appendChild(s);
+  });
+  _jszip = window.JSZip;
+  return _jszip;
+}
 
-  if (!isGLB && !isSTEP) {
-    setStatus('Unsupported format. Drop a .glb / .gltf (KiCad) or .step / .stp (any EDA tool) file.', 'error');
+/** Extract Gerber files from a ZIP and return them as File objects. */
+async function extractGerbersFromZip(zipFile) {
+  setStatus('Extracting ZIP…', 'info');
+  const JSZip = await getJSZip();
+  const zip   = await JSZip.loadAsync(zipFile);
+
+  const files = [];
+  const promises = [];
+
+  zip.forEach((relativePath, entry) => {
+    if (entry.dir) return;
+
+    // Only pull files whose names look like Gerber / drill files
+    const basename = relativePath.split('/').pop(); // strip sub-folders
+    const isGerber = GERBER_EXT.test(basename) || GLB_EXT.test(basename) || STEP_EXT.test(basename);
+    if (!isGerber) return;
+
+    promises.push(
+      entry.async('arraybuffer').then(buf => {
+        files.push(new File([buf], basename, { type: 'application/octet-stream' }));
+      })
+    );
+  });
+
+  await Promise.all(promises);
+  return files;
+}
+
+/** Route one or more dropped / selected files to the right loader. */
+async function loadFiles(fileList) {
+  const files = Array.from(fileList);
+  if (!files.length) return;
+
+  // ── ZIP: extract first, then re-classify ──────────────────────────────
+  const zips = files.filter(f => ZIP_EXT.test(f.name));
+  if (zips.length) {
+    try {
+      const extracted = await extractGerbersFromZip(zips[0]);
+      if (!extracted.length) {
+        setStatus('ZIP contained no recognised Gerber / GLB / STEP files.', 'error');
+        return;
+      }
+      await loadFiles(extracted); // recurse with the extracted files
+    } catch (err) {
+      setStatus('ZIP error: ' + err.message, 'error');
+    }
     return;
   }
 
-  // Show the canvas BEFORE constructing the viewer so the container has
-  // real pixel dimensions when Three.js initialises the renderer.
-  canvas.hidden = false;
+  // ── Classify flat file list ────────────────────────────────────────────
+  const gerbers = files.filter(f => GERBER_EXT.test(f.name));
+  const glbs    = files.filter(f => GLB_EXT.test(f.name));
+  const steps   = files.filter(f => STEP_EXT.test(f.name));
+  const unknown = files.filter(f =>
+    !GERBER_EXT.test(f.name) && !GLB_EXT.test(f.name) && !STEP_EXT.test(f.name));
+
+  if (unknown.length === files.length) {
+    setStatus(
+      `Unsupported file(s): ${unknown.map(f => f.name).join(', ')}. ` +
+      'Drop a .zip, .glb, .step, or Gerber files (.gbr / .gtl / .drl …).',
+      'error'
+    );
+    return;
+  }
+
+  // Prefer Gerbers if any are present (multi-layer set)
+  if (gerbers.length) { await _initAndLoad(() => viewer.loadGerbers(gerbers)); return; }
+  if (glbs.length)    { await _initAndLoad(() => viewer.loadGLB(glbs[0]));    return; }
+  if (steps.length)   { await _initAndLoad(() => viewer.loadSTEP(steps[0]));  return; }
+}
+
+async function _initAndLoad(loaderFn) {
+  // Show canvas BEFORE creating viewer so container has real dimensions
+  canvas.hidden   = false;
   dropzone.hidden = true;
   initViewer();
-
   try {
-    if (isSTEP) {
-      await viewer.loadSTEP(file);
-    } else {
-      await viewer.loadGLB(file);
-    }
+    await loaderFn();
   } catch (err) {
-    setStatus('Error loading file: ' + err.message, 'error');
+    setStatus('Error: ' + err.message, 'error');
     console.error(err);
   }
 }
@@ -322,18 +416,15 @@ dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-ove
 dropzone.addEventListener('drop', (e) => {
   e.preventDefault();
   dropzone.classList.remove('drag-over');
-  loadFile(e.dataTransfer.files[0]);
+  loadFiles(e.dataTransfer.files);
 });
 
 // Drag and drop anywhere on the canvas (for re-loading)
 canvas.addEventListener('dragover', e => e.preventDefault());
-canvas.addEventListener('drop', (e) => {
-  e.preventDefault();
-  loadFile(e.dataTransfer.files[0]);
-});
+canvas.addEventListener('drop', (e) => { e.preventDefault(); loadFiles(e.dataTransfer.files); });
 
-// File input button
-fileInput.addEventListener('change', () => loadFile(fileInput.files[0]));
+// File input — allow multiple files for Gerber sets
+fileInput.addEventListener('change', () => loadFiles(fileInput.files));
 document.getElementById('btn-open').addEventListener('click', () => fileInput.click());
 
 // ─── Keyboard shortcuts ────────────────────────────────────────────────────
@@ -369,4 +460,4 @@ function escHtml(str) {
 }
 
 // ─── Boot ───────────────────────────────────────────────────────────────────
-setStatus('Drop a .glb or .step file to begin');
+setStatus('Drop a .glb, .step, or Gerber set to begin');

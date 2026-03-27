@@ -416,7 +416,7 @@ select.ctrl-select:focus { outline: none; border-color: var(--accent); }
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
       Open GLB
     </button>
-    <input type="file" id="file-input" accept=".glb,.gltf,.step,.stp" hidden>
+    <input type="file" id="file-input" accept=".glb,.gltf,.step,.stp,.gbr,.gtl,.gbl,.gto,.gbo,.gts,.gbs,.gtp,.gbp,.gko,.gm1,.drl,.xln,.exc,.zip" multiple hidden>
 
     <div class="sep"></div>
 
@@ -473,11 +473,15 @@ select.ctrl-select:focus { outline: none; border-color: var(--accent); }
         <div class="dz-icon">&#9671;</div>
         <div class="dz-title">Drop your PCB here</div>
         <div class="dz-sub">
-          <strong style="color:var(--accent)">GLB / GLTF</strong> &nbsp;—&nbsp; full layer &amp; component data<br>
+          <strong style="color:var(--accent)">GLB / GLTF</strong> &nbsp;—&nbsp; full layers &amp; components<br>
           <code>kicad-cli pcb export glb board.kicad_pcb --output board.glb</code>
           <br><br>
-          <strong style="color:#a78bfa">STEP / STP</strong> &nbsp;—&nbsp; 3D geometry only (no build step needed)<br>
-          Export directly from KiCad, Altium, FreeCAD, or any EDA / CAD tool
+          <strong style="color:#a78bfa">STEP / STP</strong> &nbsp;—&nbsp; 3D geometry, no build step<br>
+          Export from KiCad · Altium · FreeCAD · any CAD tool
+          <br><br>
+          <strong style="color:#f59e0b">Gerber set</strong> &nbsp;—&nbsp; drop a <strong style="color:#fbbf24">.zip</strong> or all layer files at once<br>
+          <code style="color:#fbbf24">.GTL .GBL .GTO .GBO .GTS .GBS .GKO .DRL</code><br>
+          <span style="font-size:10px;color:var(--muted)">KiCad: File → Fabrication Outputs → Gerbers · Altium: File → Fabrication Outputs</span>
         </div>
       </div>
       <button class="btn primary" id="btn-open-dz" onclick="document.getElementById('file-input').click()">

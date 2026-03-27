@@ -282,6 +282,91 @@ export class PCBViewer {
   /** Load a GLB from a URL. */
   loadURL(url) { return this.loadGLB(url); }
 
+  // ── public: Gerber loading ────────────────────────────────────────────────
+
+  /**
+   * Build a 3D PCB from one or more Gerber / Excellon files.
+   * Pass all layer files together — layer types are auto-detected from filenames.
+   *
+   * @param {File[]} files   Array of File objects (GLB, GTL, GBL, DRL, …)
+   * @returns {Promise<void>}
+   */
+  async loadGerbers(files) {
+    this.#emit('loadStart', {});
+
+    // Lazy-import parsers (they import nothing external)
+    const { detectLayer, parseGerber, parseExcellon } = await import('./gerber-parser.js');
+    const { buildBoard }                               = await import('./gerber-3d.js');
+
+    const layers    = [];   // { layerType, name, data }
+    const drillData = { holes: [] };
+    const skipped   = [];
+
+    this.#emit('loadProgress', { loaded: 0, total: files.length, stage: 'reading' });
+
+    for (let i = 0; i < files.length; i++) {
+      const file      = files[i];
+      const layerType = detectLayer(file.name);
+      const text      = await file.text();
+
+      if (layerType === 'drill_pth' || layerType === 'drill_npth') {
+        const d = parseExcellon(text);
+        drillData.holes.push(...d.holes);
+      } else if (layerType !== 'unknown') {
+        const data = parseGerber(text);
+        layers.push({ layerType, name: file.name, data });
+      } else {
+        skipped.push(file.name);
+      }
+
+      this.#emit('loadProgress', { loaded: i + 1, total: files.length, stage: 'reading' });
+    }
+
+    if (!layers.length && !drillData.holes.length) {
+      throw new Error(
+        'No recognisable Gerber layers found.\n' +
+        'Make sure filenames contain standard layer identifiers (F_Cu, B_Cu, Edge_Cuts, etc.) ' +
+        'or use standard extensions (.GTL, .GBL, .GKO, .DRL …).\n' +
+        (skipped.length ? `Unrecognised files: ${skipped.join(', ')}` : '')
+      );
+    }
+
+    this.#emit('loadProgress', { loaded: 0, total: 1, stage: 'building' });
+    await new Promise(r => setTimeout(r, 20)); // let browser paint status
+
+    const boardGroup = buildBoard(layers, drillData);
+
+    // Clear previous model
+    if (this.#model) this.#scene.remove(this.#model);
+    for (const key of Object.keys(LAYER_DEFS)) this.#layers[key].objects.clear();
+    this.#components.clear();
+    this.clearMeasurements();
+    this.#clearSelection();
+
+    this.#stepMode = false;
+    this.#model    = boardGroup;
+    this.#scene.add(this.#model);
+
+    this.#boundingBox.setFromObject(this.#model);
+    this.#boundingBox.getCenter(this.#center);
+    this.#boundingBox.getSize(this.#size);
+    this.#model.position.sub(this.#center);
+    this.#model.position.y = 0; // sit on the grid
+
+    if (this.#grid) this.#grid.position.y = 0;
+
+    this.fitToBoard();
+
+    const detectedTypes = [...new Set(layers.map(l => l.layerType))];
+    this.#emit('loadComplete', {
+      fileType:       'gerber',
+      layers:         [],
+      components:     [],
+      detectedLayers: detectedTypes,
+      skipped,
+    });
+  }
+
   // ── public: STEP loading ──────────────────────────────────────────────────
 
   /**
