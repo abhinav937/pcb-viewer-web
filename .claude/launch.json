@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pcb-viewer",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "-l", "8743", "/Users/abhinavchinnusamy/Documents/github/pcb-viewer-web"],
+      "port": 8743
+    }
+  ]
+}

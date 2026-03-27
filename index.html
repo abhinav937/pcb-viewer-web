@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PCB 3D Viewer</title>
+
+<!-- Three.js via importmap (no build step needed) -->
+<script type="importmap">
+{
+  "imports": {
+    "three":          "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
+    "three/addons/":  "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/"
+  }
+}
+</script>
+
+<style>
+/* ── Reset & tokens ────────────────────────────────────────────────────── */
+/* Force [hidden] to always win over any display rule — Chrome UA doesn't use !important */
+[hidden] { display: none !important; }
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #0d0d1a;
+  --panel:   #13132a;
+  --panel2:  #1a1a35;
+  --border:  #2a2a50;
+  --accent:  #00e5ff;
+  --accent2: #7c3aed;
+  --text:    #e0e0f0;
+  --muted:   #6060a0;
+  --success: #22c55e;
+  --error:   #ef4444;
+  --warn:    #f59e0b;
+  --radius:  6px;
+  --font:    'Inter', system-ui, sans-serif;
+  --mono:    'JetBrains Mono', 'Fira Code', monospace;
+  --sidebar: 260px;
+  --toolbar: 44px;
+}
+
+html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+#app { display: grid; grid-template-rows: var(--toolbar) 1fr 24px; grid-template-columns: var(--sidebar) 1fr var(--sidebar); height: 100vh; }
+
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
+#toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  z-index: 10;
+}
+
+#toolbar .brand { font-weight: 700; font-size: 14px; color: var(--accent); margin-right: 12px; letter-spacing: 0.04em; }
+#toolbar .sep   { width: 1px; height: 22px; background: var(--border); margin: 0 6px; }
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel2);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  user-select: none;
+}
+.btn:hover  { background: var(--border); border-color: var(--muted); }
+.btn.active { background: #00e5ff22; border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+.btn.primary:hover { background: #6d28d9; }
+.btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+.view-group { display: flex; gap: 2px; }
+.view-group .btn { padding: 3px 8px; font-family: var(--mono); font-size: 11px; }
+
+/* ── Left sidebar ───────────────────────────────────────────────────────── */
+#sidebar-left {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Right sidebar ──────────────────────────────────────────────────────── */
+#sidebar-right {
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Panels ─────────────────────────────────────────────────────────────── */
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.panel-header .btn { padding: 2px 6px; font-size: 10px; }
+
+.panel-body { padding: 8px; overflow-y: auto; flex: 1; }
+.panel-body::-webkit-scrollbar { width: 4px; }
+.panel-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ── Layer list ─────────────────────────────────────────────────────────── */
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.layer-row:hover { background: var(--panel2); }
+
+.layer-row input[type=checkbox] {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--muted);
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  position: relative;
+}
+.layer-row input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+.layer-row input[type=checkbox]:checked::after {
+  content: '';
+  position: absolute;
+  left: 2px; top: 0px;
+  width: 5px; height: 9px;
+  border: 2px solid #000;
+  border-top: none;
+  border-left: none;
+  transform: rotate(45deg);
+}
+
+.layer-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.layer-dot.board            { background: #2e7d32; }
+.layer-dot.copper_front     { background: #d84315; }
+.layer-dot.copper_back      { background: #1565c0; }
+.layer-dot.silkscreen_front { background: #e0e0e0; }
+.layer-dot.silkscreen_back  { background: #9e9e9e; }
+.layer-dot.mask_front       { background: #00695c; }
+.layer-dot.mask_back        { background: #004d40; }
+.layer-dot.fab_front        { background: #f57f17; }
+.layer-dot.fab_back         { background: #ef6c00; }
+.layer-dot.components       { background: var(--accent2); }
+
+.layer-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+/* ── Component list ─────────────────────────────────────────────────────── */
+#search-box {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+#search-box:focus { outline: none; border-color: var(--accent); }
+#search-box::placeholder { color: var(--muted); }
+
+.comp-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.comp-row:hover, .comp-row.hovered { background: #00e5ff15; }
+.comp-ref { font-family: var(--mono); font-size: 11px; color: var(--accent); font-weight: 600; }
+.comp-val { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty    { color: var(--muted); font-size: 11px; padding: 8px; }
+
+/* ── Display controls (right sidebar) ──────────────────────────────────── */
+.ctrl-group {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ctrl-group:last-child { border-bottom: none; }
+.ctrl-group-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.ctrl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+  gap: 8px;
+}
+.ctrl-row label { font-size: 12px; cursor: pointer; }
+
+input[type=checkbox].toggle {
+  appearance: none;
+  width: 32px; height: 18px;
+  background: var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+input[type=checkbox].toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: left 0.2s, background 0.2s;
+}
+input[type=checkbox].toggle:checked { background: #00e5ff33; }
+input[type=checkbox].toggle:checked::after { left: 16px; background: var(--accent); }
+
+input[type=range].slider {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+  margin: 4px 0;
+}
+input[type=range].slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+select.ctrl-select {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+select.ctrl-select:focus { outline: none; border-color: var(--accent); }
+
+/* ── Main canvas area ───────────────────────────────────────────────────── */
+#main {
+  position: relative;
+  background: #0d0d1a;
+  overflow: hidden;
+}
+
+#canvas-container {
+  width: 100%;
+  height: 100%;
+}
+#canvas-container canvas { display: block; }
+
+/* ── Dropzone ───────────────────────────────────────────────────────────── */
+#dropzone {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: var(--bg);
+  z-index: 5;
+  transition: background 0.2s;
+}
+#dropzone.drag-over { background: #00e5ff08; }
+#dropzone.drag-over .dz-box { border-color: var(--accent); }
+
+.dz-box {
+  border: 2px dashed var(--border);
+  border-radius: 16px;
+  padding: 48px 64px;
+  text-align: center;
+  transition: border-color 0.2s;
+}
+.dz-icon { font-size: 48px; margin-bottom: 12px; }
+.dz-title { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+.dz-sub   { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.dz-sub code { font-family: var(--mono); font-size: 11px; background: var(--panel2); padding: 2px 5px; border-radius: 3px; color: var(--accent); }
+
+/* ── Info panel overlay ─────────────────────────────────────────────────── */
+#info-panel {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-width: 260px;
+  max-width: 420px;
+  z-index: 20;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+#info-panel .panel-header { border-radius: 10px 10px 0 0; border-bottom: 1px solid var(--border); }
+.info-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.info-table td { padding: 5px 12px; vertical-align: top; }
+.info-table .k { color: var(--muted); width: 35%; white-space: nowrap; }
+.info-table .v { color: var(--text); font-family: var(--mono); word-break: break-all; }
+.info-table tr:nth-child(even) td { background: var(--panel2); }
+
+/* ── Progress bar ───────────────────────────────────────────────────────── */
+#progress-wrap {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 30;
+}
+#progress-bar {
+  height: 2px;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+/* ── Measurement mode cursor indicator ──────────────────────────────────── */
+#canvas-container.meas-mode canvas { cursor: crosshair !important; }
+
+/* ── Status bar ─────────────────────────────────────────────────────────── */
+#statusbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.status-bar        { color: var(--muted); }
+.status-bar.info   { color: var(--accent); }
+.status-bar.success { color: var(--success); }
+.status-bar.error  { color: var(--error); }
+#stats { color: var(--muted); }
+
+/* ── Keyboard shortcut hints ────────────────────────────────────────────── */
+.kbd {
+  display: inline-block;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0px 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  margin-left: 3px;
+}
+
+/* ── Tooltip ────────────────────────────────────────────────────────────── */
+[title] { cursor: help; }
+.btn[title] { cursor: pointer; }
+
+/* ── Scrollbar global ───────────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ── Toolbar ─────────────────────────────────────────────────────────── -->
+  <header id="toolbar">
+    <span class="brand">&#9671; PCB Viewer</span>
+
+    <button class="btn primary" id="btn-open" title="Open a GLB file exported from KiCad or Altium">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Open GLB
+    </button>
+    <input type="file" id="file-input" accept=".glb,.gltf,.step,.stp" hidden>
+
+    <div class="sep"></div>
+
+    <!-- View presets -->
+    <div class="view-group" title="Camera presets (keyboard: 1–5)">
+      <button class="btn" data-view="top"       title="Top view (1)">Top</button>
+      <button class="btn" data-view="front"     title="Front view (2)">Front</button>
+      <button class="btn" data-view="right"     title="Right view (3)">Right</button>
+      <button class="btn" data-view="isometric" title="Isometric view (4)">Iso</button>
+      <button class="btn" data-view="bottom"    title="Bottom view (5)">Bot</button>
+    </div>
+
+    <button class="btn" id="btn-fit" title="Fit board to view (F)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+      Fit
+    </button>
+
+    <div class="sep"></div>
+
+    <button class="btn" id="btn-measure" title="Measure distance between two points on the board">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="8" x2="2" y2="16"/><line x1="22" y1="8" x2="22" y2="16"/></svg>
+      Measure
+    </button>
+    <button class="btn" id="btn-clear-meas" title="Clear all measurements">Clear Meas.</button>
+
+    <div class="sep"></div>
+
+    <button class="btn" id="btn-screenshot" title="Save a PNG screenshot">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="3"/><circle cx="12" cy="12" r="4"/><path d="M8 2v3M16 2v3M2 8h3M19 8h3M2 16h3M19 16h3M8 22v-3M16 22v-3"/></svg>
+      Screenshot
+    </button>
+  </header>
+
+  <!-- ── Left sidebar: Layers ─────────────────────────────────────────────── -->
+  <aside id="sidebar-left">
+    <div class="panel-header">
+      Layers
+      <button class="btn" id="btn-show-all" title="Show all layers">All</button>
+    </div>
+    <div class="panel-body" id="layer-list">
+      <p class="empty">Load a file to see layers</p>
+    </div>
+  </aside>
+
+  <!-- ── Main 3D viewport ────────────────────────────────────────────────── -->
+  <main id="main">
+    <div id="progress-wrap" hidden>
+      <div id="progress-bar" style="width:0%"></div>
+    </div>
+
+    <!-- Dropzone (shown before file is loaded) -->
+    <div id="dropzone">
+      <div class="dz-box">
+        <div class="dz-icon">&#9671;</div>
+        <div class="dz-title">Drop your PCB here</div>
+        <div class="dz-sub">
+          <strong style="color:var(--accent)">GLB / GLTF</strong> &nbsp;—&nbsp; full layer &amp; component data<br>
+          <code>kicad-cli pcb export glb board.kicad_pcb --output board.glb</code>
+          <br><br>
+          <strong style="color:#a78bfa">STEP / STP</strong> &nbsp;—&nbsp; 3D geometry only (no build step needed)<br>
+          Export directly from KiCad, Altium, FreeCAD, or any EDA / CAD tool
+        </div>
+      </div>
+      <button class="btn primary" id="btn-open-dz" onclick="document.getElementById('file-input').click()">
+        Browse file…
+      </button>
+    </div>
+
+    <!-- Three.js canvas container -->
+    <div id="canvas-container" hidden></div>
+
+    <!-- Component info overlay (shown on click) -->
+    <div id="info-panel" hidden>
+      <div class="panel-header">
+        Component Info
+        <button class="btn" id="btn-info-close">✕</button>
+      </div>
+      <div id="info-content" style="max-height:220px;overflow-y:auto;"></div>
+    </div>
+  </main>
+
+  <!-- ── Right sidebar: Components + Controls ─────────────────────────────── -->
+  <aside id="sidebar-right">
+    <!-- Display controls -->
+    <div class="panel-header">Display</div>
+    <div class="panel-body" style="flex:0;padding-bottom:0">
+      <div class="ctrl-group">
+        <div class="ctrl-group-title">Render</div>
+        <div class="ctrl-row">
+          <label for="chk-wireframe">Wireframe <span class="kbd">W</span></label>
+          <input type="checkbox" class="toggle" id="chk-wireframe">
+        </div>
+        <div class="ctrl-row">
+          <label for="chk-grid">Grid <span class="kbd">G</span></label>
+          <input type="checkbox" class="toggle" id="chk-grid" checked>
+        </div>
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-group-title">Background</div>
+        <div class="ctrl-row">
+          <label for="bg-select">Color</label>
+          <select class="ctrl-select" id="bg-select">
+            <option value="#12121f" selected>Dark (default)</option>
+            <option value="#1e1e2e">Midnight</option>
+            <option value="#0a1628">Navy</option>
+            <option value="#111111">Black</option>
+            <option value="#f5f5f0">Light</option>
+            <option value="#ffffff">White</option>
+          </select>
+        </div>
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-group-title">Explode View</div>
+        <div class="ctrl-row">
+          <label for="explode-slider">Distance</label>
+          <span id="explode-val" style="font-size:10px;color:var(--muted);font-family:var(--mono)">0%</span>
+        </div>
+        <input type="range" class="slider" id="explode-slider" min="0" max="1" step="0.01" value="0">
+      </div>
+    </div>
+
+    <!-- Components -->
+    <div class="panel-header" style="margin-top:0">
+      Components
+    </div>
+    <div class="panel-body" style="padding-top:6px;">
+      <input type="text" class="ctrl-select" id="search-box" placeholder="Search by ref / value…">
+      <div id="component-list">
+        <p class="empty">Load a file to see components</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Status bar ─────────────────────────────────────────────────────── -->
+  <footer id="statusbar">
+    <span id="status" class="status-bar">Drop a .glb file to begin</span>
+    <span id="stats"></span>
+  </footer>
+
+</div>
+
+<script>
+  // Update explode label as slider moves (plain JS before module loads)
+  document.getElementById('explode-slider').addEventListener('input', function() {
+    document.getElementById('explode-val').textContent = Math.round(this.value * 100) + '%';
+  });
+</script>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
