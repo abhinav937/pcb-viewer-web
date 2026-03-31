@@ -30,6 +30,7 @@ let viewer = null;
 function initViewer() {
   if (viewer) { viewer.dispose(); }
   viewer = new PCBViewer('#canvas-container', { showGrid: true });
+  window._viewer = viewer; // debug access
 
   // ── viewer events ──────────────────────────────────────────────────────
 
@@ -71,12 +72,12 @@ function initViewer() {
       componentList.innerHTML = '<p class="empty" style="padding:10px 8px">No component list in STEP mode</p>';
       statsEl.textContent     = 'STEP model';
     } else if (fileType === 'gerber') {
-      // detectedLayers and skipped are already destructured from event payload
-      const layerLabels = detectedLayers.map(k => k.replace(/_/g, ' ')).join(', ');
-      setStatus(`Gerber board loaded — ${detectedLayers.length} layer(s): ${layerLabels}`, 'success');
-      layerList.innerHTML     = `<p class="empty" style="padding:10px 8px">Layers baked into texture:<br><span style="color:var(--accent);font-size:10px">${layerLabels || '—'}</span>${skipped.length ? `<br><span style="color:var(--warn);font-size:10px">Skipped: ${skipped.join(', ')}</span>` : ''}</p>`;
+      const layerCount = layers.filter(l => l.objectCount > 0).length;
+      const skippedNote = skipped.length ? ` · ${skipped.length} unrecognised files skipped` : '';
+      setStatus(`Gerber PCB loaded — ${layerCount} layer(s) rendered${skippedNote}`, 'success');
+      renderLayers(layers);  // layers now has real toggleable meshes
       componentList.innerHTML = '<p class="empty" style="padding:10px 8px">Gerber files don\'t carry component data</p>';
-      statsEl.textContent     = `Gerber · ${detectedLayers.length} layers`;
+      statsEl.textContent     = `Gerber · ${layerCount} layer(s)`;
     } else {
       setStatus(`Loaded — ${components.length} component(s), ${layers.filter(l => l.objectCount > 0).length} layer(s)`, 'success');
       renderLayers(layers);

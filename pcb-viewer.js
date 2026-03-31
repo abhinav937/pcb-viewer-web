@@ -304,30 +304,66 @@ export class PCBViewer {
 
     this.#emit('loadProgress', { loaded: 0, total: files.length, stage: 'reading' });
 
-    for (let i = 0; i < files.length; i++) {
-      const file      = files[i];
-      const layerType = detectLayer(file.name);
-      const text      = await file.text();
+    // layerMap: type → merged parsed data (objects + apertures combined)
+    const layerMap = {};
 
-      if (layerType === 'drill_pth' || layerType === 'drill_npth') {
-        const d = parseExcellon(text);
-        drillData.holes.push(...d.holes);
-      } else if (layerType !== 'unknown') {
-        const data = parseGerber(text);
-        layers.push({ layerType, name: file.name, data });
-      } else {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const text = await file.text();
+
+      // Pass first 600 chars so detectLayer can read TF.FileFunction
+      const layerType = detectLayer(file.name, text.slice(0, 600));
+
+      if (layerType === 'unknown') {
         skipped.push(file.name);
+      } else if (layerType === 'drill_pth' || layerType === 'drill_npth') {
+        // Altium can export drills as Gerber (D03 flashes) not Excellon.
+        // Try Excellon first; if it yields nothing, fall back to Gerber flash extraction.
+        const excData = parseExcellon(text);
+        if (excData.holes.length) {
+          drillData.holes.push(...excData.holes);
+        } else {
+          // Gerber-format drill: D03 flashes = hole positions, aperture size = drill diameter
+          const gbr = parseGerber(text);
+          for (const obj of gbr.objects) {
+            if (obj.type === 'flash') {
+              const ap = gbr.apertures.get(obj.apertureId);
+              const d  = ap?.d ?? ap?.w ?? 0.8;
+              drillData.holes.push({ x: obj.x, y: obj.y, diameter: d });
+            }
+          }
+        }
+      } else {
+        const data = parseGerber(text);
+        // Merge multiple files that resolve to the same layer type (e.g. Pads_Top + Copper_Signal_Top)
+        if (layerMap[layerType]) {
+          const existing = layerMap[layerType];
+          existing.objects.push(...data.objects);
+          // Merge apertures (use higher id as tie-break to avoid collision)
+          for (const [id, ap] of data.apertures) existing.apertures.set(id, ap);
+          // Expand bounds
+          const b = data.bounds, eb = existing.bounds;
+          eb.minX = Math.min(eb.minX, b.minX); eb.maxX = Math.max(eb.maxX, b.maxX);
+          eb.minY = Math.min(eb.minY, b.minY); eb.maxY = Math.max(eb.maxY, b.maxY);
+        } else {
+          layerMap[layerType] = data;
+        }
       }
 
       this.#emit('loadProgress', { loaded: i + 1, total: files.length, stage: 'reading' });
     }
 
+    // Flatten merged map back to the layers array
+    for (const [layerType, data] of Object.entries(layerMap)) {
+      layers.push({ layerType, data });
+    }
+
     if (!layers.length && !drillData.holes.length) {
       throw new Error(
         'No recognisable Gerber layers found.\n' +
-        'Make sure filenames contain standard layer identifiers (F_Cu, B_Cu, Edge_Cuts, etc.) ' +
-        'or use standard extensions (.GTL, .GBL, .GKO, .DRL …).\n' +
-        (skipped.length ? `Unrecognised files: ${skipped.join(', ')}` : '')
+        'Expected files with TF.FileFunction attributes (KiCad/Altium X2), ' +
+        'or standard extensions (.GTL, .GBL, .GKO, .DRL …).\n' +
+        (skipped.length ? `Skipped: ${skipped.join(', ')}` : '')
       );
     }
 
@@ -347,20 +383,42 @@ export class PCBViewer {
     this.#model    = boardGroup;
     this.#scene.add(this.#model);
 
+    // Map each Gerber layer plane into the viewer's layer toggle system
+    const GERBER_TO_LAYER_KEY = {
+      front_copper:     'copper_front',
+      back_copper:      'copper_back',
+      front_mask:       'mask_front',
+      back_mask:        'mask_back',
+      front_silkscreen: 'silkscreen_front',
+      back_silkscreen:  'silkscreen_back',
+    };
+    const layerMeshes = boardGroup.userData.layerMeshes ?? {};
+    for (const [gerberType, mesh] of Object.entries(layerMeshes)) {
+      const key = GERBER_TO_LAYER_KEY[gerberType];
+      if (key && this.#layers[key]) this.#layers[key].objects.add(mesh);
+    }
+    // Always add the board body to the 'board' layer
+    const boardBody = boardGroup.getObjectByName('board_body');
+    if (boardBody) this.#layers['board'].objects.add(boardBody);
+
     this.#boundingBox.setFromObject(this.#model);
     this.#boundingBox.getCenter(this.#center);
     this.#boundingBox.getSize(this.#size);
     this.#model.position.sub(this.#center);
-    this.#model.position.y = 0; // sit on the grid
+    this.#model.position.y = 0;
 
     if (this.#grid) this.#grid.position.y = 0;
 
     this.fitToBoard();
 
     const detectedTypes = [...new Set(layers.map(l => l.layerType))];
+
+    // Build a layers array the UI can render (only populated types)
+    const uiLayers = this.getLayers().filter(l => l.objectCount > 0);
+
     this.#emit('loadComplete', {
       fileType:       'gerber',
-      layers:         [],
+      layers:         uiLayers,
       components:     [],
       detectedLayers: detectedTypes,
       skipped,
